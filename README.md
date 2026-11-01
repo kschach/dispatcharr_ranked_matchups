@@ -618,10 +618,26 @@ like any other new game. A game's favorite status only changes when you edit
 the list, so a game's number still never moves while it is on air; turning the
 setting on or off, editing your favorites, or a game's teams changing to or
 from a favorite (a knockout slot filled by your team) renumbers the affected
-games once (Kickoff time only), just as a rescheduled game moves. There is deliberately no "order by score": a score changes
+games once (Kickoff time only), just as a rescheduled game moves. There is deliberately no "re-order by score": a score changes
 on every refresh, and the guide finds each game by its channel number, so
 numbers that follow the score show one game's name over another game's
 programme ([#117](https://github.com/Jacob-Lasky/dispatcharr_ranked_matchups/issues/117)).
+
+**Group by score (compact)** (off by default, Compact range only) is the
+closest safe thing. It splits the range into blocks of **Score block size**
+numbers (default 10), best score first: ★9 and ★10 share the first block, then
+★8, ★7 and so on down to ★0, whose block runs to the end of the range. With a
+start of 400: ★9-10 games go in 400-409, ★8 in 410-419, ... ★0 from 490. A game
+is placed in a block by its whole-star score (the ★ in its name) at the moment
+it is first published, and a published game never moves, so a game whose score
+later crosses a whole star stays in its original block. Within a block, games
+go in kickoff order; when a block is full, a new game goes into the next lower
+block, never a higher one; empty numbers are just gaps. With **Favorites
+first** on, favorites get a block of their own ahead of ★9-10. Size **Compact
+range size** to hold every block: 10 × the block size (100 by default), or 11 ×
+with Favorites first (110), plus whatever extra room you want for ★0 games. A
+smaller range still works, but its last block holds every score that has no
+block of its own, and the log says so on each apply.
 
 **Pick a stretch of your lineup that is empty.** Channel numbers identify a
 channel to the guide *on their own*, with no group attached, so if one of your

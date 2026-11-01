@@ -66,6 +66,7 @@ from ._util import (
     CHANNEL_NUMBER_TIEBREAK_SLOTS,
     trusted_impact_narratives,
     allocate_compact_numbers,
+    allocate_compact_blocks,
     stable_hash_int,
 )
 
@@ -1859,6 +1860,21 @@ _NUMBERING_MODES = frozenset({NUMBERING_MODE_KICKOFF, NUMBERING_MODE_COMPACT})
 # Sentinel 0 means "auto": size the band to the live channel count, which gives
 # the user exactly the range they asked for and accepts constant slot reuse.
 DEFAULT_COMPACT_BAND_SIZE = 0
+
+# Group by score (compact only, off by default): `compact_score_buckets` cuts
+# the compact band into blocks of `compact_bucket_size` numbers, best whole-star
+# score first: ★9 and ★10 share the first block (a 10.0 is rare enough that a
+# block of its own would sit empty), then ★8 ... ★1, and ★0 last, open-ended to
+# the end of the band. This is NOT the "order by rating" #117/#121/#310 declined:
+# a published game still never moves (the guide binds by the bare number), so
+# only a game being numbered for the first time is placed by its score, and a
+# game whose score later crosses a whole star stays in the block it was first
+# published in. See _util.allocate_compact_blocks for the overflow rule (spill
+# DOWN, never up) and _compact_block_of for the block a game belongs in.
+COMPACT_SCORE_BUCKETS_SETTING = "compact_score_buckets"
+COMPACT_BUCKET_SIZE_SETTING = "compact_bucket_size"
+DEFAULT_COMPACT_BUCKET_SIZE = 10
+COMPACT_SCORE_BLOCKS = 10  # ★9-10, ★8, ★7, ★6, ★5, ★4, ★3, ★2, ★1, ★0
 
 # Favorites first (#310): the `favorites_first` setting numbers every favorite
 # game below every other game. The ordering key has to be one that does NOT
@@ -5633,6 +5649,56 @@ def _resolve_compact_band_size(settings: Dict[str, Any], game_count: int) -> int
     return max(1, int(game_count))
 
 
+def _resolve_compact_bucket_size(settings: Dict[str, Any]) -> Optional[int]:
+    """Numbers per score block when Group by score is on, else None (off, the
+    default, which leaves compact numbering exactly as before). A blank, junk
+    or non-positive size reads as the default rather than switching the
+    feature off behind the user's back. Kickoff mode never reads it."""
+    if not bool(settings.get(COMPACT_SCORE_BUCKETS_SETTING, False)):
+        return None
+    size = _int_setting(settings, COMPACT_BUCKET_SIZE_SETTING, DEFAULT_COMPACT_BUCKET_SIZE)
+    return size if size > 0 else DEFAULT_COMPACT_BUCKET_SIZE
+
+
+def _score_block(final: Any) -> int:
+    """The score block a game belongs in: 0 for ★9 and ★10, 1 for ★8, down to
+    9 for ★0. Judged on the score as the channel name DISPLAYS it
+    (naming.format_score), as Minimum score does (#313), so a 8.96 named ★9.0
+    goes in the ★9 block with the other games named ★9.x. Anything unparseable
+    or not finite counts as ★0."""
+    from .naming import format_score
+    try:
+        shown = float(format_score(float(final or 0.0)))
+    except (TypeError, ValueError, OverflowError):
+        return COMPACT_SCORE_BLOCKS - 1
+    if not math.isfinite(shown):
+        return COMPACT_SCORE_BLOCKS - 1
+    stars = min(max(int(math.floor(shown)), 0), COMPACT_SCORE_BLOCKS - 1)
+    return COMPACT_SCORE_BLOCKS - 1 - stars
+
+
+def _compact_block_of(
+    games: List[Dict[str, Any]], leaders: Optional[frozenset] = None,
+) -> Dict[str, int]:
+    """marker -> the Group by score block a game is placed in when it is first
+    numbered. With Favorites first on (`leaders` not None, #310), favorites get
+    a block of their own AHEAD of the score blocks, whatever they score, and
+    every score block moves one block down: the favorites block exists even
+    when no favorite is listed, as Favorites first's shift does in kickoff
+    mode, so listing one later moves nobody (and published games never move
+    anyway). The score is the cached row's `score`, the 0-10 value the ★ in
+    the channel name shows."""
+    behind = 0 if leaders is None else 1
+    out: Dict[str, int] = {}
+    for g in games:
+        marker = _build_marker_key(g)
+        if leaders is not None and marker in leaders:
+            out[marker] = 0
+        else:
+            out[marker] = behind + _score_block(g.get("score"))
+    return out
+
+
 def _place_kickoff_numbers(
     entries: Sequence[Tuple[str, int]],
     virtual_base: int,
@@ -5837,6 +5903,7 @@ def _assign_channel_numbers(
     reserved_numbers: Optional[set] = None,
     numbered_for: Optional[Dict[str, Tuple[int, int]]] = None,
     leaders: Optional[frozenset] = None,
+    bucket_size: Optional[int] = None,
 ) -> Dict[str, int]:
     """Map each game's marker to its channel number for this apply.
 
@@ -5884,6 +5951,14 @@ def _assign_channel_numbers(
     because a published game never changes slot: leaders are handed out
     before the rest, so a band filled in one apply puts them first, but a
     favorite that arrives later takes the next free slot like any newcomer.
+
+    `bucket_size` (from _resolve_compact_bucket_size; None = Group by score is
+    off) is COMPACT only and ignored in KICKOFF. It cuts the band into blocks
+    of that many numbers by whole-star score (_compact_block_of, favorites in
+    a block of their own first when `leaders` is set) and places each NEW game
+    in its block, kickoff order inside it, spilling down when the block is
+    full (_util.allocate_compact_blocks). Published games hold their numbers
+    exactly as without it.
     """
     if mode == NUMBERING_MODE_COMPACT:
         by_start: List[Tuple[int, datetime, str]] = []
@@ -5898,9 +5973,28 @@ def _assign_channel_numbers(
         ordered = [marker for _, _, marker in by_start]
         size = band_size if band_size is not None else len(ordered)
         reserved = reserved_numbers or set()
-        assigned = allocate_compact_numbers(
-            ordered, virtual_base, size, existing_numbers or {}, reserved,
-        )
+        if bucket_size:
+            blocks = COMPACT_SCORE_BLOCKS + (0 if leaders is None else 1)
+            if size < blocks * bucket_size:
+                # Not refused: the allocator clamps the blocks the band cannot
+                # hold into its last one, so every game still gets a number
+                # while one is free. Said every apply, like the skipped-numbers
+                # line below, because the fix is a setting.
+                logger.warning(
+                    "[ranked_matchups] Group by score: compact band %d-%d holds %d "
+                    "of %d blocks of %d; the lower scores share its last block. Set "
+                    "'Compact range size' to at least %d.",
+                    virtual_base, virtual_base + size - 1,
+                    -(-size // bucket_size), blocks, bucket_size, blocks * bucket_size,
+                )
+            assigned = allocate_compact_blocks(
+                ordered, _compact_block_of(games, leaders), virtual_base, size,
+                bucket_size, existing_numbers or {}, reserved,
+            )
+        else:
+            assigned = allocate_compact_numbers(
+                ordered, virtual_base, size, existing_numbers or {}, reserved,
+            )
         blocked = sum(
             1 for n in reserved if virtual_base <= int(n) <= virtual_base + size - 1
         )
@@ -5915,11 +6009,12 @@ def _assign_channel_numbers(
         if dropped:
             logger.warning(
                 "[ranked_matchups] compact band %d-%d has room for %d of %d games "
-                "(%d slot(s) taken by your other channels); dropping the %d latest. "
+                "(%d slot(s) taken by your other channels); dropping the %d %s. "
                 "Raise 'Compact range size', move 'Starting channel number' to an "
                 "empty stretch of your lineup, or lower 'Maximum channels'.",
                 virtual_base, virtual_base + size - 1, len(assigned), len(ordered),
                 blocked, dropped,
+                "lowest-scored" if bucket_size else "latest",
             )
         return assigned
 
@@ -8243,6 +8338,10 @@ def _action_apply(settings: Dict[str, Any]) -> Dict[str, Any]:
         reserved_numbers=reserved_numbers,
         numbered_for=numbered_for,
         leaders=numbering_leaders,
+        # Group by score: compact only, _assign_channel_numbers ignores it in
+        # kickoff mode. decided_games are cache rows, so each carries the
+        # `score` its channel name shows.
+        bucket_size=_resolve_compact_bucket_size(settings),
     )
     if numbering_mode == NUMBERING_MODE_COMPACT and decided_games:
         # A game with no slot cannot be published: a null channel_number

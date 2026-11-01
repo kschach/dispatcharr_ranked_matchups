@@ -135,8 +135,30 @@ to sort to the top of group lists):
   compact only hands leaders slots first (a published game never moves). The
   shift must stay wider than any slate's kickoff spread, which is why
   `lookahead_days` is capped at `MAX_LOOKAHEAD_DAYS` (400,
-  `_resolve_lookahead_days`): DO NOT raise one without the other. Ordering by
-  score is deliberately not offered (#117: the guide binds by number)
+  `_resolve_lookahead_days`): DO NOT raise one without the other. RE-ordering by
+  score is deliberately not offered (#117, #310: the guide binds by number).
+  What compact DOES offer is Group by score (`compact_score_buckets`, off by
+  default, `compact_bucket_size` numbers per block, default 10): the band is cut
+  into fixed blocks, ★9-10 first (a 10.0 shares the ★9 block), then ★8 ... ★1,
+  and ★0 last, open-ended to the end of the band; with Favorites first on, the
+  leaders get a block of their own AHEAD of ★9-10 (it exists even with no
+  favorite listed, so listing one moves nobody). `_compact_block_of` decides a
+  game's block from the cached row's `score` as the name DISPLAYS it
+  (`_score_block`, via `naming.format_score`, like Minimum score #313: 8.96 is
+  ★9.0, so block ★9), and `_util.allocate_compact_blocks` places it. The
+  invariant is unchanged: pass 1 (`_hold_published`, shared with
+  `allocate_compact_numbers`) holds every published game on its number in
+  whatever block it sits, so the score places a game ONCE, when it is first
+  numbered, and a game whose score later crosses a whole star stays put. New
+  games go best block first, each block filled by `allocate_compact_numbers`
+  itself (every number in use passed as reserved), so the above-the-highest,
+  wrap-inside-the-block policy holds per block; a game its block cannot hold
+  spills DOWN (head of the next block's queue, ahead of that block's own
+  games), never up, and one that fits nowhere below is omitted like any
+  unplaceable compact game. A block index past the last block the band starts
+  is clamped into that last block (a narrow band, e.g. the auto band, still
+  places every game while a number is free); apply logs a warning when the
+  band is under blocks × size. Kickoff mode ignores both settings
 - `streams` = cloned via `ChannelStream` from the matched source channel, plus
   the Path C stream-name matches. `_stream_sort_key` orders the stack
   outside-in: group policy (`fallback_only_groups` demotes a group below

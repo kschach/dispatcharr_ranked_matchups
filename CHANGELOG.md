@@ -5,6 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com/) with semver.
 
 ## [Unreleased]
 
+### Added
+
+- **Group by score (compact).** A new **Group by score (compact)** setting
+  (off by default, Compact range only) splits the range into blocks of **Score
+  block size** numbers (default 10) by the ★ score in the channel name: ★9-10
+  first, then ★8 down to ★0, whose block runs to the end of the range. A game
+  is placed by its whole-star score when it is first published and never moves
+  after that, because the guide finds each game by its channel number (#117,
+  #310), so a game whose score later crosses a whole star stays in its block.
+  Kickoff order inside a block; a full block sends new games to the next lower
+  block, never a higher one. With **Favorites first**, favorites get a block of
+  their own ahead of the score blocks. Set **Compact range size** to at least
+  10 × the block size (11 × with Favorites first).
+
 ### Fixed
 
 - **Wrong-sport and last-week feeds on game channels.** NC State at Stanford

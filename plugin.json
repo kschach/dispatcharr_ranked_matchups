@@ -689,11 +689,25 @@
       "help_text": "Compact mode only. How many channel numbers to reserve, counting up from the starting number. Leave it at 0 and it reserves exactly as many as you have channels, so a start of 400 with 25 channels gives you 400-424 and nothing else. Set it higher only if you want headroom, either to raise 'Maximum channels' later without moving everything, or because that stretch of your lineup is partly occupied and the plugin needs somewhere to put the games it cannot fit. Ignored in Kickoff-time mode."
     },
     {
+      "id": "compact_score_buckets",
+      "type": "boolean",
+      "label": "Group by score (compact)",
+      "default": false,
+      "help_text": "Compact range only, off by default. Splits the range into blocks by the ★ score in the channel name, best first: ★9 and ★10 share the first block, then ★8, ★7 and so on down to ★0, whose block runs to the end of the range. A game is placed in a block by its whole-star score at the moment it is first published, and a published game never moves, so a game whose score later crosses a whole star stays in its original block (the guide finds each game by its channel number, so moving it would show the wrong game). Within a block, games go in kickoff order. When a block is full, a new game goes into the next lower block, never a higher one. Empty numbers are just gaps. With Favorites first on, favorites get a block of their own ahead of the ★9-10 block. Set 'Compact range size' to cover every block: 10 times 'Score block size' (100 with the default of 10), or 11 times with Favorites first (110); anything above that is extra room for the ★0 block. A smaller range puts the lowest scores together in its last block. Ignored in Kickoff-time mode."
+    },
+    {
+      "id": "compact_bucket_size",
+      "type": "number",
+      "label": "Score block size (Group by score)",
+      "default": 10,
+      "help_text": "Group by score only. How many channel numbers each score block gets. With the default of 10 and a starting number of 400, ★9-10 games go in 400-409, ★8 in 410-419, and so on down to ★0 from 490. Make it at least the most games you expect at one score: the extras go into the next lower block."
+    },
+    {
       "id": "favorites_first",
       "type": "boolean",
       "label": "Favorites first",
       "default": false,
-      "help_text": "Gives games involving your Favorite teams the lowest channel numbers, so they sit at the top of the list, while every other game is still shown below them. Kickoff-time numbering: favorites always come first, each block still sorted by start time, and the other games' numbers move up by 10,000,000 to make room. Compact range: a game never changes number once it has one, so favorites take the first numbers when the range fills, but one added later takes the next free number. In Kickoff-time mode, turning this on or off, or editing Favorite teams, renumbers the affected games once, and so does a game whose teams change to or from a favorite (a knockout slot filled by your team). Ordering by score is not offered, because scores change every refresh and the guide finds each game by its channel number, so the guide would show the wrong game."
+      "help_text": "Gives games involving your Favorite teams the lowest channel numbers, so they sit at the top of the list, while every other game is still shown below them. Kickoff-time numbering: favorites always come first, each block still sorted by start time, and the other games' numbers move up by 10,000,000 to make room. Compact range: a game never changes number once it has one, so favorites take the first numbers when the range fills, but one added later takes the next free number. In Kickoff-time mode, turning this on or off, or editing Favorite teams, renumbers the affected games once, and so does a game whose teams change to or from a favorite (a knockout slot filled by your team). With 'Group by score (compact)' on, favorites get a block of their own ahead of the score blocks. Re-ordering by score is not offered, because scores change every refresh and the guide finds each game by its channel number, so the guide would show the wrong game; Group by score only uses a game's score once, when it is first numbered."
     },
     {
       "id": "placeholder_min_score",

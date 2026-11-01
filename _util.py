@@ -161,6 +161,34 @@ def _next_free_slot(used, cursor, band_start, band_end):
     return None
 
 
+def _hold_published(ordered_markers, band_start, band_end, existing, reserved):
+    """Pass 1 of compact allocation, the ONE implementation (plain compact and
+    score blocks both run it): every published game whose number is still
+    inside the band, and not reserved or already handed to an earlier marker,
+    keeps it. Returns (marker -> held number, every number now in use in the
+    band, reserved ones included)."""
+    existing = existing or {}
+    assigned: Dict[str, int] = {}
+    # Seeding `used` with the reserved numbers is what makes the allocator skip
+    # them: they are never handed out, and never counted as free.
+    used: set = {
+        int(n) for n in (reserved or ())
+        if n is not None and band_start <= int(n) <= band_end
+    }
+    for marker in ordered_markers:
+        cur = existing.get(marker)
+        if cur is None:
+            continue
+        cur = int(cur)
+        # `cur not in used` now also rejects a number that has since been taken
+        # by a channel outside our group, so a colliding channel is renumbered
+        # on the next apply instead of being left on the duplicate.
+        if band_start <= cur <= band_end and cur not in used:
+            assigned[marker] = cur
+            used.add(cur)
+    return assigned, used
+
+
 def allocate_compact_numbers(
     ordered_markers: List[str],
     band_start: int,
@@ -219,26 +247,7 @@ def allocate_compact_numbers(
     if band_size < 1:
         return {}
     band_end = band_start + band_size - 1
-    existing = existing or {}
-    assigned: Dict[str, int] = {}
-    # Seeding `used` with the reserved numbers is what makes the allocator skip
-    # them: they are never handed out, and never counted as free.
-    used: set = {
-        int(n) for n in (reserved or ())
-        if n is not None and band_start <= int(n) <= band_end
-    }
-
-    for marker in ordered_markers:
-        cur = existing.get(marker)
-        if cur is None:
-            continue
-        cur = int(cur)
-        # `cur not in used` now also rejects a number that has since been taken
-        # by a channel outside our group, so a colliding channel is renumbered
-        # on the next apply instead of being left on the duplicate.
-        if band_start <= cur <= band_end and cur not in used:
-            assigned[marker] = cur
-            used.add(cur)
+    assigned, used = _hold_published(ordered_markers, band_start, band_end, existing, reserved)
 
     cursor = (max(used) + 1) if used else band_start
     for marker in ordered_markers:
@@ -250,6 +259,78 @@ def allocate_compact_numbers(
         assigned[marker] = slot
         used.add(slot)
         cursor = slot + 1
+    return assigned
+
+
+def allocate_compact_blocks(
+    ordered_markers: List[str],
+    block_of: Dict[str, int],
+    band_start: int,
+    band_size: int,
+    block_size: int,
+    existing: Optional[Dict[str, int]] = None,
+    reserved: Optional[set] = None,
+) -> Dict[str, int]:
+    """Compact allocation with the band cut into fixed blocks: Group by score
+    (`compact_score_buckets`), where block 0 holds the best whole-star scores.
+
+    Block i is ``[band_start + i*block_size, band_start + (i+1)*block_size - 1]``,
+    and the LAST block that starts inside the band runs open-ended to the end of
+    the band. `block_of` maps each marker to the block it belongs in (the
+    caller decides what a block means: plugin._compact_block_of puts ★9-10 in
+    the first, ★0 in the last, and Favorites first's leaders in a block of
+    their own ahead of them). A block index past the last block the band holds
+    is clamped to it, so a band too narrow for every block still places its
+    lowest scores, together, in its last block, instead of dropping games
+    while numbers are free.
+
+    **A PUBLISHED GAME STILL NEVER MOVES** (see allocate_compact_numbers; #117,
+    and #310 where the maintainer declined ordering by score for exactly that
+    reason). Pass 1 is the plain allocator's, `_hold_published`, over the whole
+    band: a game keeps its number whichever block that number is in, so a game
+    whose score has since crossed a whole star stays where it was first put.
+    Only a game being numbered NOW is placed by its score, which is why the
+    block is a fact about the moment the game was first published, not about
+    its current score.
+
+    New games are placed best block first. Each block is filled by
+    allocate_compact_numbers itself, with every number already in use passed
+    as reserved, so the plain allocator's slot policy (above the highest number
+    in use in the block, wrapping to the block's lowest hole only when the top
+    is spent) applies per block, unchanged. A game its block cannot hold
+    SPILLS DOWN: it joins the head of the next block's queue, ahead of that
+    block's own games, so a better game is never displaced by a worse one, and
+    it carries on down to the end of the band. It never goes UP into a better
+    block. Whatever is left after the last block did not fit and is omitted,
+    exactly as the plain allocator omits markers when the band is full; the
+    caller MUST tolerate a missing marker.
+
+    `ordered_markers` is kickoff order, which is the order inside each block.
+    """
+    if band_size < 1:
+        return {}
+    if block_size < 1:
+        return allocate_compact_numbers(ordered_markers, band_start, band_size, existing, reserved)
+    band_end = band_start + band_size - 1
+    assigned, used = _hold_published(ordered_markers, band_start, band_end, existing, reserved)
+    blocks = max(1, -(-band_size // block_size))  # blocks that START inside the band
+    queues: List[List[str]] = [[] for _ in range(blocks)]
+    for marker in ordered_markers:
+        if marker in assigned:
+            continue
+        queues[min(max(0, int(block_of.get(marker, blocks - 1))), blocks - 1)].append(marker)
+    carried: List[str] = []
+    for i in range(blocks):
+        start = band_start + i * block_size
+        size = (band_end - start + 1) if i == blocks - 1 else block_size
+        pending = carried + queues[i]
+        if not pending:
+            carried = []
+            continue
+        placed = allocate_compact_numbers(pending, start, size, None, used)
+        assigned.update(placed)
+        used.update(placed.values())
+        carried = [m for m in pending if m not in placed]
     return assigned
 
 
